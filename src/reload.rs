@@ -391,7 +391,7 @@ impl Drop for WatchHandle {
 // Watch builder
 // ===========================================================================
 
-/// Builder returned by [`watch`]. Configure, then call
+/// Builder returned by [`watch()`]. Configure, then call
 /// [`spawn`][Watch::spawn] or [`reloadable`][Watch::reloadable].
 #[derive(Debug, Clone)]
 pub struct Watch {
