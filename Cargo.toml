@@ -15,8 +15,12 @@ categories = ["asynchronous", "config"]
 notify = "8"
 
 # Async — background reload task, debounce timer, notify->async bridge,
-# and the watch channel that pushes new values to subscribers.
+# and the watch channel that wakes subscribers.
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+
+# Lock-free value storage — `borrow()` is a lock-free load, so a guard
+# held across `.await` never blocks the reload task's swap.
+arc-swap = "1"
 
 # Errors
 thiserror = "2"

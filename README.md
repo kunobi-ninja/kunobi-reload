@@ -62,8 +62,11 @@ Pick by whether your client's *identity* must stay stable.
 
 ### `FromMount` — the value is rebuilt
 
-The crate owns the value; consumers read the latest via `load()` or are
-pushed it via a `Subscription`. Each rotation yields a brand-new value.
+The crate owns the value; consumers read the latest via `borrow()` or
+are pushed it via a `Subscription`. Each rotation yields a brand-new
+value. `FromMount::retire` lets the *old* value tear itself down
+asynchronously (close a pool, drain a channel) — something `Drop`
+can't do.
 
 ```rust
 use kunobi_reload::{watch, BoxError, FromMount, Mount};
@@ -74,18 +77,28 @@ impl FromMount for DbUri {
     async fn from_mount(mount: Mount) -> Result<Self, BoxError> {
         Ok(DbUri(mount.read_str("uri")?.trim().to_string()))
     }
+    // optional: async fn retire(self: Arc<Self>) { ... }
 }
 
 # async fn run() -> anyhow::Result<()> {
 let db = watch("/etc/app/db").reloadable::<DbUri>().await?;
 
-let current = db.load();              // freshest value, any time
+let current = db.borrow();            // a Ref<'_, DbUri> — can't be stashed
 let mut sub = db.subscribe();         // or be *pushed* every change:
 // while let Some(new) = sub.changed().await { /* rebuild pool, ... */ }
-# let _ = (current, sub);
+# let _ = (&*current, sub);
 # Ok(())
 # }
 ```
+
+`borrow()` returns a `Ref<'_, T>`, not an owned value, on purpose: the
+lifetime makes it a *compile error* to store it in a struct, so a
+caller can't freeze a stale snapshot. The guard is lock-free — safe to
+hold across `.await`, never blocks a rotation.
+
+A failed re-parse keeps the previous value; `db.reload_status()`
+reports `Healthy` vs `Stale { since, last_error }` so you can surface
+it on a metric or `/readyz`.
 
 ### `Refresh` — the client updates itself in place
 
@@ -147,8 +160,9 @@ containers:
   directory. (This crate does.)
 - **Using an env var for a rotating secret.** Frozen at pod start.
   Mount the Secret as a volume.
-- **Caching the parsed value forever.** Call `load()` when you need
-  it; hold the `Arc` across one request, not for the process lifetime.
+- **Caching the parsed value forever.** `borrow()` returns a guard you
+  *can't* store — re-borrow at each use. Store the `Reloadable` handle,
+  never the value.
 - **Assuming instant propagation.** kubelet syncs mounted Secrets on
   its own cycle (up to ~1 min). `kunobi-reload` reacts within
   milliseconds of the *file* changing — but the file changing is still
