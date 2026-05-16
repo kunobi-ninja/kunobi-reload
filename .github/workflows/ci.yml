@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  RUSTDOCFLAGS: -D warnings
+  # Silence the Node 20 deprecation warning emitted by actions/checkout
+  # and actions/cache. Node 24 becomes the default in June 2026.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  checks:
+    name: Rust Checks
+    runs-on: kunobi-runners
+    container:
+      image: rust:1.94.1-bookworm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Add Rust components
+        run: rustup component add rustfmt clippy
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test
+
+      - name: Build docs
+        run: cargo doc --lib --no-deps
+
+  # cargo-deny replaces cargo-audit + cargo-outdated. It checks RustSec
+  # advisories, license policy, banned crates, and duplicate versions in
+  # one pass.
+  deny:
+    name: cargo-deny
+    runs-on: kunobi-runners
+    container:
+      image: rust:1.94.1-bookworm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-deny-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'deny.toml') }}
+          restore-keys: cargo-deny-${{ runner.os }}-
+      - name: Install cargo-deny
+        run: |
+          if ! command -v cargo-deny >/dev/null; then
+            cargo install cargo-deny --locked
+          fi
+      - name: cargo deny check
+        run: cargo deny check

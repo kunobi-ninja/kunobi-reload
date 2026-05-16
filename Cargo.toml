@@ -1,0 +1,42 @@
+[package]
+name = "kunobi-reload"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.1"
+license = "Apache-2.0"
+description = "Hot-reload values derived from Kubernetes mounted volumes (Secrets, ConfigMaps, projected) when the ..data symlink is swapped."
+repository = "https://github.com/kunobi-ninja/kunobi-reload"
+keywords = ["kubernetes", "secrets", "configmap", "hot-reload", "rotation"]
+categories = ["asynchronous", "config"]
+
+[dependencies]
+# Filesystem watching — inotify on Linux, FSEvents on macOS. This is
+# the mechanism: idle until a real event, react in milliseconds.
+notify = "8"
+
+# Async — background reload task, debounce timer, notify->async bridge.
+tokio = { version = "1", features = ["rt", "time", "sync"] }
+
+# Lock-free value swap for the current parsed value.
+arc-swap = "1"
+
+# Errors
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+
+[dev-dependencies]
+# Multi-thread runtime + macros for tests and the example.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# Simulated mount directories in unit tests — no real cluster needed.
+tempfile = "3"
+anyhow = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[example]]
+name = "reload"
+path = "examples/reload.rs"
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
