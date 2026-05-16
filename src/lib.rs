@@ -85,4 +85,4 @@ pub mod error;
 pub mod reload;
 
 pub use error::{BoxError, Error, Result};
-pub use reload::{Mount, Reloadable, Watch, watch};
+pub use reload::{Driver, FromMount, Mount, Refresh, Reloadable, Subscription, Watch, watch};

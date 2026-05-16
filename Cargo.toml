@@ -14,11 +14,9 @@ categories = ["asynchronous", "config"]
 # the mechanism: idle until a real event, react in milliseconds.
 notify = "8"
 
-# Async — background reload task, debounce timer, notify->async bridge.
-tokio = { version = "1", features = ["rt", "time", "sync"] }
-
-# Lock-free value swap for the current parsed value.
-arc-swap = "1"
+# Async — background reload task, debounce timer, notify->async bridge,
+# and the watch channel that pushes new values to subscribers.
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
 
 # Errors
 thiserror = "2"

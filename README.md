@@ -16,21 +16,19 @@ operator rotates a password, cert-manager renews a certificate, you
 edit a `ConfigMap` — kubelet refreshes the files on disk, but the
 running process keeps using the stale value until it restarts.
 
-The usual workarounds are unsatisfying: restart the pod on every
-rotation (an external controller watching the Secret), or poll the
-files on a timer (wasteful, and slow to react). Both also have to get
-the *Kubernetes mounted-volume layout* right, which is easy to get
-subtly wrong. This crate solves it once.
+`kunobi-reload` closes that gap. You describe how to parse the mount;
+the value re-derives itself, in milliseconds, whenever the mount's
+**content** actually changes.
 
-`kunobi-reload` is **not** a Kubernetes client — no `kube`, no
-`k8s-openapi` dependency. It only watches the filesystem. It just
-*knows* the contract Kubernetes mounted volumes follow and watches it
-correctly.
+It is **not** a Kubernetes client — no `kube`, no `k8s-openapi`
+dependency, and **no client dependencies either**: no `sqlx`, no
+`rustls`. It ships *traits*, not helpers. You implement a trait for
+your own client type; the crate stays a pure filesystem watcher that
+understands the Kubernetes mounted-volume contract.
 
 ## How Kubernetes mounts Secrets
 
-A mounted volume is not a plain set of files. kubelet builds it like
-this:
+A mounted volume is not a plain set of files:
 
 ```text
 /etc/app/db/
@@ -43,78 +41,85 @@ this:
 ```
 
 On every update kubelet writes a **new** timestamped directory, then
-**atomically renames** the `..data` symlink onto it, then removes the
-old directory. The user-facing files (`uri`, `password`) are symlinks
-whose text never changes — only `..data`'s target moves.
-
-`kunobi-reload`:
+**atomically renames** the `..data` symlink onto it. `kunobi-reload`:
 
 - watches the **mount directory** with [`notify`](https://crates.io/crates/notify)
   (inotify on Linux, FSEvents on macOS) — never the individual files,
-  which are symlinks that would either never fire an event or strand
-  the watch on a deleted inode after the first rotation;
-- **debounces** the event burst a single rotation produces;
-- confirms the `..data` target actually moved before re-parsing;
-- resolves `..data` once per parse, so a multi-file value (a TLS
-  cert + key + CA bundle) never mixes old and new files;
-- **keeps the previous value** if a re-parse fails — a transient read
-  error mid-rotation never takes the value away.
+  which are symlinks that would never fire an event or strand the
+  watch on a deleted inode after the first rotation;
+- falls back to a **slow poll** (default 5 min, configurable) only as
+  a safety net for a missed event — `notify` is the mechanism;
+- on any trigger, **reads the content and hashes it** — a reload
+  happens only when the bytes actually changed, so a `..data` swap
+  with identical content wakes nobody;
+- resolves `..data` once per parse, so a multi-file value (TLS
+  cert + key + CA) never mixes old and new files;
+- **keeps the previous value** if a re-parse fails.
 
-## Usage
+## The trait design — two ways to stay fresh
 
-```toml
-[dependencies]
-kunobi-reload = { git = "https://github.com/kunobi-ninja/kunobi-reload", tag = "v0.1.0" }
-```
+Pick by whether your client's *identity* must stay stable.
+
+### `FromMount` — the value is rebuilt
+
+The crate owns the value; consumers read the latest via `load()` or are
+pushed it via a `Subscription`. Each rotation yields a brand-new value.
 
 ```rust
-use kunobi_reload::{watch, BoxError};
+use kunobi_reload::{watch, BoxError, FromMount, Mount};
+
+struct DbUri(String);
+
+impl FromMount for DbUri {
+    async fn from_mount(mount: Mount) -> Result<Self, BoxError> {
+        Ok(DbUri(mount.read_str("uri")?.trim().to_string()))
+    }
+}
 
 # async fn run() -> anyhow::Result<()> {
-// Mount the Secret as a volume at /etc/app/db, then:
-let db = watch("/etc/app/db")
-    .spawn(|mount| async move {
-        let uri = mount.read_str("uri")?;
-        // build whatever T you need — a pool, a client, a token:
-        // Ok(sqlx::PgPool::connect(&uri).await?)
-        Ok::<_, BoxError>(uri)
-    })
-    .await?;
+let db = watch("/etc/app/db").reloadable::<DbUri>().await?;
 
-// `load()` always returns the freshest parsed value — lock-free.
-let current = db.load();
-# let _ = current;
+let current = db.load();              // freshest value, any time
+let mut sub = db.subscribe();         // or be *pushed* every change:
+// while let Some(new) = sub.changed().await { /* rebuild pool, ... */ }
+# let _ = (current, sub);
 # Ok(())
 # }
 ```
 
-`spawn` parses once eagerly (so a missing or malformed mount fails
-fast), then a `notify` watcher takes over. When the Secret rotates,
-the closure re-runs and the new value is swapped in atomically.
-`Reloadable<T>` is cheap to clone — every clone shares one watcher and
-one current value.
+### `Refresh` — the client updates itself in place
 
-### Multi-file values
-
-Because `..data` is swapped atomically, a parse that reads several
-keys always sees a consistent set:
+The consumer holds one stable `Arc<Client>`; the crate calls
+`refresh` on it on every change. Every existing `&Client` call site
+keeps working untouched — only the client's internals are swapped.
+Best for retrofitting rotation into an existing client without
+rewiring its call sites.
 
 ```rust
-# use kunobi_reload::{watch, BoxError};
+use std::sync::{Arc, Mutex};
+use kunobi_reload::{watch, BoxError, Mount, Refresh};
+
+struct ApiClient {
+    token: Mutex<String>,
+}
+
+impl Refresh for ApiClient {
+    async fn refresh(&self, mount: Mount) -> Result<(), BoxError> {
+        *self.token.lock().unwrap() = mount.read_str("token")?;
+        Ok(())
+    }
+}
+
 # async fn run() -> anyhow::Result<()> {
-let tls = watch("/etc/app/tls")
-    .spawn(|mount| async move {
-        let cert = mount.read("tls.crt")?;
-        let key  = mount.read("tls.key")?;
-        // cert and key are guaranteed to be from the same rotation
-        # let _ = (&cert, &key);
-        Ok::<_, BoxError>((cert, key))
-    })
-    .await?;
-# let _ = tls;
+let client = Arc::new(ApiClient { token: Mutex::new(String::new()) });
+let _driver = watch("/etc/app/api").drive(client.clone()).await?;
+// `client` is now kept fresh — every holder of it sees rotated tokens.
 # Ok(())
 # }
 ```
+
+For an ad-hoc value with no named type, `watch(dir).spawn(closure)`
+takes a parse closure directly.
 
 ## Mounting the Secret as a volume
 
@@ -136,43 +141,36 @@ containers:
 
 ## Common pitfalls
 
-- **Watching the file, not the directory.** `notify` on `…/uri`
-  watches a symlink that is never rewritten — zero events — or, if it
-  follows the link, strands on the deleted inode after one rotation.
-  Always watch the mount directory. (This crate does.)
-- **Using an env var for a rotating secret.** Env vars are frozen at
-  pod start. Mount the Secret as a volume.
+- **Watching the file, not the directory.** A watch on `…/uri`
+  watches a symlink that is never rewritten — zero events — or strands
+  on a deleted inode after one rotation. Always watch the mount
+  directory. (This crate does.)
+- **Using an env var for a rotating secret.** Frozen at pod start.
+  Mount the Secret as a volume.
 - **Caching the parsed value forever.** Call `load()` when you need
-  the value; don't stash the `Arc<T>` from startup. Holding it across
-  one request is fine — holding it for the process lifetime defeats
-  the point.
+  it; hold the `Arc` across one request, not for the process lifetime.
 - **Assuming instant propagation.** kubelet syncs mounted Secrets on
-  its own cycle (up to ~1 minute). `kunobi-reload` reacts within
+  its own cycle (up to ~1 min). `kunobi-reload` reacts within
   milliseconds of the *file* changing — but the file changing is still
   gated by kubelet.
 
 ## Testing
 
 ```bash
-cargo test
-```
-
-Tests build Kubernetes-style mount layouts (`..<timestamp>` data
-directory, atomically renamed `..data` symlink, per-key symlinks) in
-`tempfile` directories and assert the watcher reloads on a swap — no
-real cluster needed.
-
-```bash
+cargo test       # builds K8s-style mounts in tempdirs, asserts reload-on-swap
 cargo deny check
 ```
 
 ## Roadmap
 
-Future additions as duplication shows up across Kunobi services:
+`kunobi-reload` deliberately ships **no client implementations** — the
+trait surface (`FromMount`, `Refresh`) is the contract; consumers
+implement it for their own types and the crate keeps zero client
+dependencies. Future work, only as duplication shows up:
 
-- `Reloadable<rustls::ServerConfig>` helper behind a `rustls` feature
-- `Reloadable<sqlx::PgPool>` helper behind a `sqlx` feature
-- a manual `reload()` trigger for consumers that want to force a refresh
+- a derive macro for `FromMount` over a struct of named keys
+- richer `Mount` accessors (optional keys, base64/PEM decoding helpers
+  that stay dependency-free)
 
 ## License
 
