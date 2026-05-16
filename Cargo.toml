@@ -14,10 +14,12 @@ categories = ["asynchronous", "config"]
 # the mechanism: idle until a real event, react in milliseconds.
 notify = "8"
 
-# Async — background reload task, debounce timer, notify->async bridge.
-tokio = { version = "1", features = ["rt", "time", "sync"] }
+# Async — background reload task, debounce timer, notify->async bridge,
+# and the watch channel that wakes subscribers.
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
 
-# Lock-free value swap for the current parsed value.
+# Lock-free value storage — `borrow()` is a lock-free load, so a guard
+# held across `.await` never blocks the reload task's swap.
 arc-swap = "1"
 
 # Errors

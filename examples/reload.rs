@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(dir, "watching — edit the `value` file to see reloads");
 
     loop {
-        tracing::info!(value = %value.load(), "current");
+        tracing::info!(value = value.borrow().as_str(), "current");
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }

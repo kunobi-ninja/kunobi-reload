@@ -29,9 +29,11 @@
 //!     })
 //!     .await?;
 //!
-//! // `load()` always returns the freshest parsed value.
-//! let current = db.load();
-//! # let _ = current;
+//! // `borrow()` always yields the freshest parsed value. The guard
+//! // cannot be stored in a struct, so a stale snapshot is a compile
+//! // error — re-borrow at each use.
+//! let current = db.borrow();
+//! # let _ = &*current;
 //! # Ok(())
 //! # }
 //! ```
@@ -85,4 +87,6 @@ pub mod error;
 pub mod reload;
 
 pub use error::{BoxError, Error, Result};
-pub use reload::{Mount, Reloadable, Watch, watch};
+pub use reload::{
+    Driver, FromMount, Mount, Ref, Refresh, ReloadStatus, Reloadable, Subscription, Watch, watch,
+};
