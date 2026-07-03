@@ -1,7 +1,9 @@
 # kunobi-reload
 
+[![Crates.io](https://img.shields.io/crates/v/kunobi-reload.svg)](https://crates.io/crates/kunobi-reload)
+[![Docs.rs](https://img.shields.io/docsrs/kunobi-reload)](https://docs.rs/kunobi-reload)
 [![CI](https://github.com/kunobi-ninja/kunobi-reload/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kunobi-ninja/kunobi-reload/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.94.1-blue.svg)](Cargo.toml)
 
 Hot-reload values derived from **Kubernetes mounted volumes** —
